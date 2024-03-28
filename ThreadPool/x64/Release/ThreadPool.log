@@ -1,0 +1,12 @@
+﻿  main.cpp
+D:\cppCode\Apps\ThreadPool\main.cpp(45,9): error C2280: “Result::Result(const Result &)”: 尝试引用已删除的函数
+D:\cppCode\Apps\ThreadPool\threadpool.h(224,1): message : 编译器已在此处生成“Result::Result”
+D:\cppCode\Apps\ThreadPool\threadpool.h(224,1): message : “Result::Result(const Result &)”: 由于 数据成员 调用已删除或不可访问的函数“Any::Any(const Any &)”，因此已隐式删除函数
+D:\cppCode\Apps\ThreadPool\threadpool.h(114,2): message : “Any::Any(const Any &)”: 已隐式删除函数
+  threadpool.cpp
+D:\cppCode\Apps\ThreadPool\threadpool.cpp(82,3): error C2280: “Result::Result(const Result &)”: 尝试引用已删除的函数
+D:\cppCode\Apps\ThreadPool\threadpool.h(224,1): message : 编译器已在此处生成“Result::Result”
+D:\cppCode\Apps\ThreadPool\threadpool.h(224,1): message : “Result::Result(const Result &)”: 由于 数据成员 调用已删除或不可访问的函数“Any::Any(const Any &)”，因此已隐式删除函数
+D:\cppCode\Apps\ThreadPool\threadpool.h(114,2): message : “Any::Any(const Any &)”: 已隐式删除函数
+D:\cppCode\Apps\ThreadPool\threadpool.cpp(154,63): error C2572: “Result::Result”: 重定义默认参数 : 参数 1
+D:\cppCode\Apps\ThreadPool\threadpool.h(213,2): message : 参见“Result::Result”的声明
