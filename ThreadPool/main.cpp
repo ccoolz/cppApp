@@ -1,6 +1,11 @@
 #include "threadpool.h"
 
-void Hello();
+typedef unsigned long long uLong;
+
+void Hello()
+{
+	std::cout << "Hello ";
+}
 
 class TaskHello : public Task
 {
@@ -18,7 +23,7 @@ public:
 		std::cout << "tId: " << std::this_thread::get_id() << " 开始执行\n";
 		Hello();
 		std::cout << "thread " << std::this_thread::get_id() << "\n";
-		int sum = 0;
+		uLong sum = 0;
 		for (int i = begin; i <= end; i++)
 			sum += i;
 
@@ -31,21 +36,23 @@ private:
 	int end = 0;
 };
 
-void Hello()
-{
-	std::cout << "Hello ";
-}
-
-
-void Test1()
+void test1()
 {
 	ThreadPool thread_pool;
 	thread_pool.start(4);
 
-	Result res = thread_pool.submitTask(std::make_shared<TaskHello>(0, 4));
+	// Master - Slave 线程模型
+	// Master线程用来分解任务，然后给各个slave线程分配任务
+	// 等待各个slave线程执行完任务，返回结果
+	// Master线程合并各个任务结果，输出
+	Result res1 = thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	Result res2 = thread_pool.submitTask(std::make_shared<TaskHello>(100000001, 200000000));
+	Result res3 = thread_pool.submitTask(std::make_shared<TaskHello>(200000001, 300000000));
 	// 如何设计这里的Result机制呢  -- 用return task->Result 这样的设计还是 return Result(task)，答案是后者，因为Task对象的生命周期在上面这一行就结束了，需要用后面的设计来延长到下面一行结束,具体的延长方式就是通过shared_ptr增加其引用计数，所以在Result类中设计了一个shared_ptr对象
-	int sum = res.getAny().cast<int>();
-	std::cout << "sum = " << sum;
+	uLong sum1 = res1.getAny().cast<uLong>();		// !Bug: 未经处理的异常: Microsoft C++ 异常: char，位于内存位置 0x0133FAD  主要原因是这里cast<int>里忘了改成cast<uLong>
+	uLong sum2 = res2.getAny().cast<uLong>();
+	uLong sum3 = res3.getAny().cast<uLong>();
+	std::cout << "sum = " << sum1 + sum2 + sum3 << "\n";
 
 	//thread_pool.submitTask(std::make_shared<TaskHello>());		// 可以直接传任务的匿名对象
 
@@ -60,10 +67,28 @@ void Test1()
 	//thread_pool.submitTask(HelloTask);
 
 	// 因为线程是detach的，所以主程序运行完，线程资源自动回收，线程函数还没来得及运行完，这不是设计的问题，实际应用中，这个服务就是持续运行的，加上休眠时间测试一下
-	std::this_thread::sleep_for(std::chrono::seconds(10));
+	// std::this_thread::sleep_for(std::chrono::seconds(5));
+}
+
+void test2()
+{
+	ThreadPool thread_pool;
+	thread_pool.start();
+	thread_pool.setMode(PoolMode::MODE_CACHED);
+
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	// 默认4条线程，将上面四个任务取走，任务中有延时，不会很快执行完。那么MODE_CACHED下我们预期会创建两条新线程来接下面两个任务
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+	thread_pool.submitTask(std::make_shared<TaskHello>(0, 100000000));
+
+	// 线程空闲时间上限 THREAD_IDLE_TIME_LIMIT 设为5s，那么预期多创建的两个线程会在花3s执行任务然后空闲5s后被自动回收
+	std::this_thread::sleep_for(std::chrono::seconds(12));
 }
 
 int main()
 {
-	Test1();
+	test2();
 }

@@ -1,4 +1,4 @@
-/* ±¾¶àÏß³Ì³Ø¿âµÄ»ù±¾Ê¹ÓÃÊ¾Àı Example -------
+/* ±¾¶àÏß³Ì³Ø¿âFixedÄ£Ê½ÏÂµÄ»ù±¾Ê¹ÓÃÊ¾Àı Example -------
 
 ThreadPool pool;		// ´´½¨Ïß³Ì³Ø¶ÔÏó
 pool.start(5);			// ´´½¨Äã´«ÈëÊıÁ¿µÄÏß³Ì£¬¿ªÆôÏß³Ì³Ø£¨Ä¬ÈÏÏß³ÌÊıÊÇ4£©
@@ -9,8 +9,13 @@ public:
 	void run() { ×Ô¶¨Òå... }
 }
 
-pool.submitTask(std::makeshared<MyTask> )	// ´«ÈëÄãÒª¶àÏß³ÌÔËĞĞµÄº¯Êı£¬Ïß³Ì»á×Ô¶¯»ñÈ¡²¢ÔËĞĞ
+// Ö±½ÓÔËĞĞ
+pool.submitTask(std::makeshared<MyTask>())	// ´«ÈëÄãÒª¶àÏß³ÌÔËĞĞµÄº¯Êı£¬Ïß³Ì»á×Ô¶¯»ñÈ¡²¢ÔËĞĞ
 
+// Èç¹ûĞèÒª·µ»ØÖµ£¬ÓÃResultÀà½Ó
+Result res = pool.submitTask(std::makeshared<MyTask>())
+// ¼ÙÈç·µ»ØÖµÊÇintÀàĞÍ£¬µ÷ÓÃÒÔÏÂ·½·¨
+int val = res.getAny().cast<int>();
 ------------------------------------------ */
 
 // #pragma once			// Ê¹Í·ÎÄ¼ş²»»á±»ÖØ¸´°üº¬£¬²»¹ı²¢²»ÊÇËùÓĞ±àÒëÆ÷¶¼Ö§³Ö£¬ÏÂÃæĞ´Ò»¸öÍ¨ÓÃµÄ
@@ -25,6 +30,7 @@ pool.submitTask(std::makeshared<MyTask> )	// ´«ÈëÄãÒª¶àÏß³ÌÔËĞĞµÄº¯Êı£¬Ïß³Ì»á×Ô¶
 #include <condition_variable>
 #include <functional>
 #include <thread>
+#include <unordered_map>
 
 // ÈÎÎñ³éÏó»ùÀà		¶àÌ¬Ë¼Ïë: ÈÃÏß³Ì¿ÉÒÔ½ÓÊÕ²»Í¬ÀàĞÍµÄÈÎÎñ£¨»ùÀàÖ¸Õë£©£¬ÅÉÉúÀàÖØĞ´»ùÀàµÄrun·½·¨£¨Ö¸ÏòÅÉÉúÀà¶ÔÏó£©£¬ÊµÏÖÊ¹ÓÃÏàÍ¬·½·¨¶Ô²»Í¬ÀàĞÍÈÎÎñµÄ²»Í¬´¦Àí
 class Result;
@@ -48,22 +54,27 @@ private:
 // Ïß³Ì³ØÄ£Ê½Ã¶¾Ù	ºÏÀíµØÊ¹ÓÃÃ¶¾Ù£¬¿ÉÒÔÌá¸ß´úÂëµÄ¿É¶ÁĞÔºÍ¿ÉÎ¬»¤ĞÔ£¬Ê¹µÃ³ÌĞò¸ü¼ÓÇåÎúÒ×¶®
 enum class PoolMode		// Ö®Ç°µÄÃ¶¾ÙÊ¹ÓÃÃ¶¾ÙĞÍ²»ÓÃ¼ÓÃ¶¾ÙÀàĞÍ£¬µ¼ÖÂ¿ÉÄÜ³öÏÖ²»Í¬Ã¶¾ÙÀïµÄÍ¬ÃûÃ¶¾ÙÏîÎÊÌâ£¬ĞÂ±ê×¼Àï¿ÉÒÔÓÃ enum class·À·¶Õâ¸öÎÊÌâ¡£Ê¹ÓÃ enum classĞèÒªÓÃ×÷ÓÃÓò·ÃÎÊÃ¶¾ÙÏî
 {
-	MODE_FIXED,		// ¹Ì¶¨Ïß³ÌÊıÁ¿Ä£Ê½£¬ÒÀ»úÆ÷ºËÊı¶ø¶¨
-	MODE_CACHED		// Ïß³ÌÊıÁ¿¿É¶¯Ì¬Ôö³¤
+	MODE_FIXED,		// ¹Ì¶¨Ïß³ÌÊıÁ¿Ä£Ê½£¬ÒÀ»úÆ÷ºËÊı¶ø¶¨		-- ³¡¾°£º´¦ÀíºÄÊ±µÄÈÎÎñ
+	MODE_CACHED		// Ïß³ÌÊıÁ¿¿É¶¯Ì¬Ôö³¤					-- ³¡¾°£º´¦ÀíĞ¡¶ø¿ìµÄÈÎÎñ£¬ÈÎÎñ´¦Àí±È½Ï½ô¼±
 };
 
 // Ïß³ÌÀà
 class Thread
 {
-	using ThreadFunc = std::function<void()>;
+	using ThreadFunc = std::function<void(int)>;
 public:
 	Thread(ThreadFunc func_);
 
 	~Thread();
 
 	void start();	// Æô¶¯Ïß³Ì
+
+	int getId() const;
 private:
 	ThreadFunc func;
+
+	static int generate_id;		// Ïß³ÌidÊÇ¶àÉÙÎŞËùÎ½£¬Ö»Òª²»Ò»Ñù¿ÉÒÔ´ú±íÕâ¸öÏß³Ì¾ÍĞĞ£¬ÓÃÕâ¸ö±äÁ¿±ä»¯²úÉúÏß³Ìid
+	int thread_id;		// ±£´æÏß³Ìid
 };
 
 // Ïß³Ì³ØÀà
@@ -76,33 +87,43 @@ public:
 
 	void setMode(PoolMode mode);		// ÉèÖÃÏß³Ì³ØµÄÄ£Ê½
 
-	void start(size_t init_thread_size = 4);		// ¿ªÆôÏß³Ì³Ø£¬Éè¶¨Ä¬ÈÏµÄ³õÊ¼Ïß³ÌÊıÁ¿Îª4£¬ÓÃ»§¿ÉÒÔ´«Èë²ÎÊı¸Ä±ä¸ÃÖµ
+	void start(int init_thread_size = 4);		// ¿ªÆôÏß³Ì³Ø£¬Éè¶¨Ä¬ÈÏµÄ³õÊ¼Ïß³ÌÊıÁ¿Îª4£¬ÓÃ»§¿ÉÒÔ´«Èë²ÎÊı¸Ä±ä¸ÃÖµ
 
-	void setTaskSizeUpperLimit(size_t max_size);		// ÉèÖÃÈÎÎñ¶ÓÁĞÊıÁ¿ÉÏÏŞ
+	void setTaskSizeUpperLimit(int max_size);		// ÉèÖÃÈÎÎñ¶ÓÁĞÊıÁ¿ÉÏÏŞ
+
+	void setThreadSizeUpperLimit(int max_size);		// cachedÄ£Ê½ÏÂ£¬ÉèÖÃÏß³Ì¶ÓÁĞÊıÁ¿ÉÏÏŞ
 
 	Result submitTask(std::shared_ptr<Task> task);	// ÓÃ»§¸øÏß³Ì³ØÌá½»ÈÎÎñ
+
+	bool checkRunningState();
 
 	ThreadPool(const ThreadPool& thread_pool) = delete;		// ½ûÓÃ¿½±´¹¹Ôì
 
 	ThreadPool& operator=(const ThreadPool& thread_pool) = delete;		// ½ûÓÃ¸³Öµ
 			// ÓÃ»§¿ÉÒÔ´´½¨Ïß³Ì³Ø¶ÔÏó£¬²»¹ıÏß³Ì³Ø¶ÔÏóÉæ¼°ÁËºÜ¶àÄÚÈİ£¬Ëø£¬ÈİÆ÷.. ×îºÃ½ûÓÃ¶ÔÏß³Ì³Ø¶ÔÏóµÄ¿½±´ĞĞÎª
 private:
-	void threadFunc();		// ¶¨ÒåÏß³Ìº¯Êı
+	void threadFunc(int thread_id);		// ¶¨ÒåÏß³Ìº¯Êı
 	
 private:
-	std::vector< std::unique_ptr<Thread>> threads;			// Ïß³ÌÊı×é£¬´æ´¢Ïß³ÌµÄÈİÆ÷		ÓĞÖ¸Õë¾ÍÒªÓĞÎö¹¹£¬×Ô¼ºÎö¹¹ºÜÂé·³£¬ÍêÈ«¿ÉÒÔÍ¨¹ıÖÇÄÜÖ¸Õë
-	size_t initial_thread_size;				// ³õÊ¼µÄÏß³ÌÊıÁ¿	start()Ä¬ÈÏ³õÊ¼»¯ÎªCPUºËÊı£¬ÒòÎªstart()ÊÇÊ¹ÓÃÏß³Ì³Ø±ØĞëÏÈµ÷ÓÃµÄ·½·¨£¬ËùÒÔÔÚ¹¹Ôìº¯ÊıÖĞ×¨ÃÅ³õÊ¼»¯¸ÃÖµÎª0¾ÍĞĞ
-	PoolMode pool_mode;						// Ïß³Ì³ØµÄÄ£Ê½
+	//std::vector< std::unique_ptr<Thread>> threads;			// Ïß³ÌÊı×é£¬´æ´¢Ïß³ÌµÄÈİÆ÷		ÓĞÖ¸Õë¾ÍÒªÓĞÎö¹¹£¬×Ô¼ºÎö¹¹ºÜÂé·³£¬ÍêÈ«¿ÉÒÔÍ¨¹ıÖÇÄÜÖ¸Õë
+	std::unordered_map<int, std::unique_ptr<Thread>> threads;	// ¸Ä³É¼üÖµ¶ÔµÄĞÎÊ½£¬Í¨¹ıid·ÃÎÊÏß³Ì´Ó¶ø¸ü¾«È·µÄ¹ÜÀíÏß³Ì
+	int initial_thread_size;				// ³õÊ¼µÄÏß³ÌÊıÁ¿	start()Ä¬ÈÏ³õÊ¼»¯ÎªCPUºËÊı£¬ÒòÎªstart()ÊÇÊ¹ÓÃÏß³Ì³Ø±ØĞëÏÈµ÷ÓÃµÄ·½·¨£¬ËùÒÔÔÚ¹¹Ôìº¯ÊıÖĞ×¨ÃÅ³õÊ¼»¯¸ÃÖµÎª0¾ÍĞĞ
+	std::atomic_int idle_thread_size;		// ¼ÇÂ¼¿ÕÏĞÏß³ÌµÄÊıÁ¿	Ö»ÒªÊÇ»á±»²»Í¬Ïß³ÌÍ¬Ê±²Ù×÷µÄ±äÁ¿£¬¾¡Á¿Ê¹ÓÃÔ­×ÓÀàĞÍ
+	int thread_size_upper_limit;			// Ïß³ÌÊıÁ¿ÉÏÏŞ		cachedÄ£Ê½ÏÂÏß³ÌÊıÁ¿²»ÄÜÎŞĞİÖ¹µØÔö¼Ó
+	std::atomic_int cur_thread_size;		// µ±Ç°Ïß³ÌÊıÁ¿
 
 	std::queue< std::shared_ptr<Task>> task_que;			// ÈÎÎñ¶ÓÁĞ£¬ÎªÁËÊµÏÖ¶àÌ¬£¬ÒÔÈÎÎñ»ùÀàµÄÖ¸Õë»òÒıÓÃ³õÊ¼»¯¡£
 				/* Òª¿¼ÂÇÒ»ÖÖÇé¿ö: ÔÚsubmitTask(task) ÖĞ£¬ÈôÓÃ»§´«ÈëµÄÊÇÁÙÊ±ÈÎÎñ¶ÔÏó£¬Ôò¸ÃĞĞÓï¾ä½áÊøºó¸Ã¶ÔÏó¾Í±»Îö¹¹
 				Ïß³Ì½ÓÊÕµÄÖ¸ÕëÖ¸Ïò±»ÊÍ·ÅµÄÄÚ´æ£¬Ã»ÓĞÒâÒå£¬ËùÒÔĞÎ²ÎÉèÎªTask¶ÔÏóµÄÖÇÄÜÖ¸Õë -- ¿ÉÒÔÑÓ³¤ÁÙÊ±¶ÔÏóµÄÉúÃüÖÜÆÚµ½run·½·¨½áÊøºó£¬²¢×Ô¶¯ÊÍ·ÅÆä×ÊÔ´ */
-	std::atomic_uint task_size;				// ÈÎÎñµÄÊıÁ¿			ÖªµÀÒ»¶¨²»ÊÇ¸ºÊı¾Í¿ÉÒÔÓÃunsigned int£¬¶àÏß³Ì¶ÔÈÎÎñÊıÁ¿µÄ·ÃÎÊµÄ»¥³âĞÔ¿ÉÒÔÓÃÔ­×ÓÀàĞÍÊµÏÖ
-	size_t task_size_upper_limit;			// ÈÎÎñÊıÁ¿ÉÏÏŞ
+	std::atomic_int task_size;				// ÈÎÎñµÄÊıÁ¿			ÖªµÀÒ»¶¨²»ÊÇ¸ºÊı¾Í¿ÉÒÔÓÃunsigned int£¬¶àÏß³Ì¶ÔÈÎÎñÊıÁ¿µÄ·ÃÎÊµÄ»¥³âĞÔ¿ÉÒÔÓÃÔ­×ÓÀàĞÍÊµÏÖ
+	int task_size_upper_limit;			// ÈÎÎñÊıÁ¿ÉÏÏŞ
 	
 	std::mutex task_que_mtx;				// ±£Ö¤ÈÎÎñ¶ÓÁĞÏß³Ì°²È«µÄ»¥³âËø
 	std::condition_variable not_full;		// ±íÊ¾ÈÎÎñ¶ÓÁĞ²»Âú
 	std::condition_variable not_empty;		// ±íÊ¾ÈÎÎñ¶ÓÁĞ²»¿Õ
+
+	PoolMode pool_mode;						// Ïß³Ì³ØµÄÄ£Ê½
+	std::atomic_bool is_pool_runnig;		// Ïß³Ì³ØÊÇ·ñÔÚÔËĞĞ£¬·ÅÔÚÏß³Ì³ØµÄ³ÉÔ±º¯ÊıÀï·ÀÖ¹ÓÃ»§²»¿ªÆôÏß³Ì³ØÖ±½Óµ÷ÓÃ·½·¨µÄÎó²Ù×÷
 };
 
 // ×Ô¼º´´½¨µÄAnyÀàĞÍ£¬¿ÉÒÔ½ÓÊÕÈÎÒâÊı¾İµÄÀàĞÍ (Ä£°åÀàµÄ´úÂë¶¼Ö»ÄÜĞ´ÔÚÒ»¸öÍ·ÎÄ¼şÖĞ±»°üº¬£¬²»ÄÜ·ÖÎÄ¼ş±àĞ´ÉùÃ÷ºÍ¶¨Òå)
