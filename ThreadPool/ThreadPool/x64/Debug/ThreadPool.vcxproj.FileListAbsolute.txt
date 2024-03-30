@@ -1,0 +1,2 @@
+D:\cppCode\Apps\ThreadPool\x64\Debug\ThreadPool.exe
+D:\cppCode\Apps\ThreadPool\ThreadPool\x64\Debug\ThreadPool.exe
