@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/home/ccoolz/cppCode/App/ClusterChatServer/LearnExamples/2_MuduoTest/build",
+  "command": "/usr/bin/g++    -g -g   -o CMakeFiles/main.dir/src/main.cpp.o -c /home/ccoolz/cppCode/App/ClusterChatServer/LearnExamples/2_MuduoTest/src/main.cpp",
+  "file": "/home/ccoolz/cppCode/App/ClusterChatServer/LearnExamples/2_MuduoTest/src/main.cpp"
+}
+]
