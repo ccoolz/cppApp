@@ -1,6 +1,7 @@
 #include "chatservice.hpp"
 #include "public.hpp"
 #include <string>
+#include <vector>
 #include <muduo/base/Logging.h>             // muduo的日志相关
 using namespace muduo;
 
@@ -10,6 +11,11 @@ ChatService::ChatService()
 {
     msg_handler_map.insert({LOGIN_MSG, std::bind(&ChatService::login, this, _1, _2, _3)});
     msg_handler_map.insert({REGIST_MSG, std::bind(&ChatService::regist, this, _1, _2, _3)});
+    msg_handler_map.insert({ONE_CHAT_MSG, std::bind(&ChatService::oneChat, this, _1, _2, _3)});
+    msg_handler_map.insert({ADD_FRIEND_MSG, std::bind(&ChatService::addFriend, this, _1, _2, _3)});
+    msg_handler_map.insert({CREATE_GROUP_MSG, std::bind(&ChatService::createGroup, this, _1, _2, _3)});
+    msg_handler_map.insert({ADD_GROUP_MSG, std::bind(&ChatService::addGroup, this, _1, _2, _3)});
+    msg_handler_map.insert({GROUP_CHAT_MSG, std::bind(&ChatService::groupChat, this, _1, _2, _3)});
 }
 
 ChatService* ChatService::getInstance()
@@ -32,12 +38,211 @@ MsgHandler ChatService::getHandler(int msg_id)
     return iter->second;                    // or return ..map[msg_id]
 }
 
-void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
+// 处理客户端异常退出 -- 没有更改用户登录状态，用户再次登录就无法成功
+void ChatService::clientCloseException(const TcpConnectionPtr &conn)
 {
-    LOG_INFO << "execute login...";
+    int id = -1;
+    {
+        std::lock_guard<std::mutex> lock(map_mtx);          // 维护成员 user_conn_map的线程安全
+
+        for (auto iter = user_conn_map.begin(); iter != user_conn_map.end(); iter++)
+        {
+            // 1.根据 conn通过 user_conn_map找到对应的 用户id            find()只能通过键找值
+            if (iter->second == conn)
+            {
+                // 2.将用户在数据库中的登录状态改为 offline
+                id = iter->first;
+                
+                // 3.将连接信息从 用户-连接map表中删除
+                user_conn_map.erase(iter);
+                break;
+            }
+        }
+    }
+    User user = user_model.query(id);                       // 这部分操作本该在2中完成，但为了减小锁的粒度，移到锁的作用域外完成
+    user.setState("offline");       
+    user_model.updateState(user);
 }
 
+// 服务器异常退出，重置业务方法（比如使所有用户状态下线）
+void ChatService::reset()
+{
+    // 把 online用户的 state重置为 offline
+    user_model.resetState();
+}
+
+// 处理登录业务 -- 收到客户端发送的json字符串，服务器解析消息类型为登录，反序列化 id password
+void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int id = js["id"].get<int>();
+    std::string password = js["password"];
+
+    User user = user_model.query(id);
+    json response;
+    if (user.getId() != -1 && password == user.getPassword())     
+    {                                       // 若没找到或有错误会返回 User()对象，id = -1
+        if (user.getState() == "online")
+        {                                   // 虽然查到了，但用户已登录，不能重复登录
+            response["msgid"] = LOGIN_MSG_ACK;
+            response["errno"] = 1;
+            response["errmsg"] = "该账号已登录，请勿重复登录";
+            conn->send(response.dump());
+        }
+        else                                // 登录成功，记录用户连接信息，更新用户状态为 online
+        {
+            {
+                std::lock_guard<std::mutex> lock(map_mtx);
+                user_conn_map.insert({id, conn});
+            }
+            user.setState("online");
+            user_model.updateState(user);
+
+            // 登录回应消息
+            response["msgid"] = LOGIN_MSG_ACK;
+            response["errno"] = 0;
+            response["id"] = user.getId();
+            response["name"] = user.getName();
+            // 若该用户有离线消息，将离线时收到的消息也转发过去
+            std::vector<std::string> msgs_vec = offline_msg_model.query(id);
+            if (msgs_vec.empty() == false)  // 消息 vector不为空，说明没有离线消息
+            {
+                response["offlinemsg"] = msgs_vec;
+                // 转发完该用户的离线消息后，把这些离线消息从表中清除
+                offline_msg_model.remove(id);
+            }            
+
+            // 查询用户的好友信息一并发送
+            std::vector<User> usrs_vec = friend_model.query(id);
+            if (usrs_vec.empty() == false)
+            {                               // vector<User> 包含自定义类型，无法直接装到 json，正好好友的 password字段为空无意义，我们可以用一个字符串 vector，每一条 string 代表一个装好友信息的 json对象反序列化的字符串
+                std::vector<std::string> friends;
+                for (User &user : usrs_vec)
+                {
+                    json usr_js;
+                    usr_js["id"] = user.getId();
+                    usr_js["name"] = user.getName();
+                    usr_js["state"] = user.getState();
+                    friends.push_back(usr_js.dump());
+                }
+                response["friends"] = friends;
+            }
+            
+            // 发送所有消息给用户客户端
+            conn->send(response.dump());
+        } 
+    }
+    else                                    // 登录失败
+    {
+        response["msgid"] = LOGIN_MSG_ACK;
+        response["errno"] = 2;
+        response["errmsg"] = "用户id号不存在或密码错误";
+        conn->send(response.dump());
+    }
+}
+
+// 处理注册业务 -- 收到客户端发送的json字符串，服务器解析消息类型为登录，反序列化 name password | id自动生成 state默认offline 不需要
 void ChatService::regist(const TcpConnectionPtr &conn, json &js, Timestamp time)
 {
-    LOG_INFO << "execute regist...";
+    std::string name = js["name"];
+    std::string pwd = js["password"];
+
+    User user;
+    user.setName(name);
+    user.setPassword(pwd);
+
+    bool result = user_model.insert(user);
+    json response;
+    if (result == true)             // 注册成功 -- 回复响应消息
+    {
+        response["msgid"] = REGIST_MSG_ACK;
+        response["errno"] = 0;                      // 我们约定错误码 0为注册成功
+        response["id"] = user.getId();              // 把生成的 id也回复给客户端
+        conn->send(response.dump());
+    }
+    else                            // 注册失败
+    {
+        response["msgid"] = REGIST_MSG_ACK;
+        response["errno"] = 1;
+        conn->send(response.dump());
+    }
+}
+
+// 处理一对一聊天业务
+void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    // 查询被发送消息用户的在线状态（通过 user_conn_map）
+    int to_id = js["toid"].get<int>();
+    {
+        std::lock_guard<std::mutex> lock(map_mtx);
+        auto iter = user_conn_map.find(to_id);
+        if (iter != user_conn_map.end())       // 连接表中找到了说明对方在线
+        {
+            // to_id在线，转发消息 -- 为什么要在上锁区间里做，因为转发消息需要对方用户的连接 conn，也就是需要 map获取 conn，若不对这段操作加锁，可能在发送消息前有其他线程的操作使 conn被移除 user_conn_map表，这个 conn失效了导致这次发送操作失效
+            iter->second->send(js.dump());
+            return;
+        }
+    }
+    
+    // to_id不在线，存储离线消息
+    offline_msg_model.insert(to_id, js.dump());
+}
+
+// 处理添加好友业务     发起人: id  好友: friendid
+void ChatService::addFriend(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int user_id = js["id"].get<int>();
+    int friend_id = js["friendid"].get<int>();
+
+    friend_model.insert(user_id, friend_id);
+}
+
+// 创建群组业务     创建人: id  群名: groupname  群描述: groupdesc  | 群 id自动生成
+void ChatService::createGroup(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int user_id = js["id"].get<int>();
+    std::string group_name = js["groupname"];
+    std::string group_desc = js["groupdesc"];
+
+    Group group(-1, group_name, group_desc);        
+    if (group_model.createGroup(group) == true);        // group引用传递做参数，id自动生成后会覆盖掉 -1
+    {
+        // 若创建群成功，存储创建人的身份信息
+        std::string role = "creator";
+        group_model.addGroup(user_id, group.getId(), role);
+    }
+}
+
+// 加入群组业务     加入的用户: id  加入的群: id  |  群身份应指定为 normal
+void ChatService::addGroup(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int user_id = js["id"].get<int>();
+    int group_id = js["groupid"].get<int>();
+    std::string role = "normal";
+    group_model.addGroup(user_id, group_id, role);
+}
+
+// 群组聊天业务     发消息用户: id  发消息的群聊: groupid
+void ChatService::groupChat(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    int user_id = js["id"].get<int>();
+    int group_id = js["groupid"].get<int>();
+
+    // 获取其他群聊成员的 id
+    std::vector<int> id_vec = group_model.queryGroupUsers(user_id, group_id);
+
+    // 接下来可能涉及到多线程中对 user_conn_map的同时访问，要上锁。若在循环内上锁，每次循环都要上锁和释放锁，浪费资源
+    std::lock_guard<std::mutex> lock(map_mtx);
+    for (int id : id_vec)
+    {       // 对于同一群聊中的每一个 id
+        auto iter = user_conn_map.find(id);
+        if (iter != user_conn_map.end())
+        {
+            // 若 id在线在线，转发消息
+            TcpConnectionPtr conn = iter->second;
+            conn->send(js.dump());
+        } else {
+            // 不在线，存储离线消息
+            offline_msg_model.insert(id, js.dump());
+        }
+    }
 }

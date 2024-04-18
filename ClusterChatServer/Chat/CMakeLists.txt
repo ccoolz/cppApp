@@ -10,9 +10,11 @@ set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} -g)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 
 # 配置头文件的搜索路径
-include_directories(${PROJECT_SOURCE_DIR}/include)          # server 和 chat 通用头文件
-include_directories(${PROJECT_SOURCE_DIR}/include/server)   # server 单独使用的头文件
-include_directories(${PROJECT_SOURCE_DIR}/thirdparty)       # json.hpp
+include_directories(${PROJECT_SOURCE_DIR}/include)              # server 和 chat 通用头文件
+include_directories(${PROJECT_SOURCE_DIR}/include/server)       # server 单独使用的头文件
+include_directories(${PROJECT_SOURCE_DIR}/include/server/db)    # mysql 数据库相关头文件
+include_directories(${PROJECT_SOURCE_DIR}/include/server/model) # 封装了数据库操作接口的相关类，使业务面向对象编程，拆分数据模块
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty)           # json.hpp
 
 # 加载子目录    会自动去子指定目录下寻找 CMakeLists文件，继续执行 cmake
 add_subdirectory(src)

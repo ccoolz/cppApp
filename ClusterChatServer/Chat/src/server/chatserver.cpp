@@ -33,6 +33,7 @@ void ChatServer::onConnection(const TcpConnectionPtr &conn)
         std::cout 
             << "[ " << conn->peerAddress().toIpPort() << " -> " 
             << conn->localAddress().toIpPort() << " ] connection break\n";
+        ChatService::getInstance()->clientCloseException(conn);                 // 处理客户端没有发 json消息直接异常退出的情况
         conn->shutdown();                                                       // 断连回收资源 { epoll(delete conn_fd) & close(conn_fd) }
     }
 }
