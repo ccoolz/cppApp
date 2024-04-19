@@ -85,7 +85,7 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
         {                                   // 虽然查到了，但用户已登录，不能重复登录
             response["msgid"] = LOGIN_MSG_ACK;
             response["errno"] = 1;
-            response["errmsg"] = "该账号已登录，请勿重复登录";
+            response["errmsg"] = "this account is already online, do not log in again!";
             conn->send(response.dump());
         }
         else                                // 登录成功，记录用户连接信息，更新用户状态为 online
@@ -127,6 +127,35 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
                 response["friends"] = friends;
             }
             
+            // 查询用户所在的群组信息一并发送
+            std::vector<Group> groups = group_model.queryGroups(id);
+            if (groups.empty() == false)
+            {
+                std::vector<std::string> groups_str_vec;
+                for (Group &group : groups)
+                {
+                    json group_js;
+                    group_js["id"] = group.getId();
+                    group_js["groupname"] = group.getName();
+                    group_js["groupdesc"] = group.getDesc();
+
+                    std::vector<GroupUser> group_users = group.getUsers();
+                    std::vector<std::string> members_str_vec;
+                    for (GroupUser &mem : group_users)
+                    {
+                        json mem_js;
+                        mem_js["id"] = mem.getId();
+                        mem_js["name"] = mem.getName();
+                        mem_js["state"] = mem.getState();
+                        mem_js["role"] = mem.getRole();
+                        members_str_vec.push_back(mem_js.dump());       // 自定义类型的 vec无法被装进 json（如 json["users"] = std::vector<GroupUser>无法识别），所以我们以序列化后的 json字符串形式存储，可以被 json识别
+                    }
+                    group_js["users"] = members_str_vec;
+                    groups_str_vec.push_back(group_js.dump());
+                }
+                response["groups"] = groups_str_vec;
+            }
+
             // 发送所有消息给用户客户端
             conn->send(response.dump());
         } 
@@ -135,7 +164,7 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
     {
         response["msgid"] = LOGIN_MSG_ACK;
         response["errno"] = 2;
-        response["errmsg"] = "用户id号不存在或密码错误";
+        response["errmsg"] = "the user id does not exist or the password is incorrect!";
         conn->send(response.dump());
     }
 }
