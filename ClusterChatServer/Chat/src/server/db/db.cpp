@@ -1,5 +1,6 @@
 #include "db.h"
 #include <muduo/base/Logging.h>
+#include <iostream>
 
 // 数据库配置信息
 static std::string server = "127.0.0.1";
@@ -35,7 +36,7 @@ bool MySQL::connect()
                                     0);                 // flag
     if (p != nullptr)
     {                           // C/C++默认编码是 ASCII，若不设置 gbk，从 MySQL拉下来的中文会显示乱码
-        mysql_query(conn, "set names gbk");
+        mysql_query(conn, "set names utf8");
         LOG_INFO << "connect mysql succeeded!" ;
     }
     else
@@ -52,6 +53,7 @@ bool MySQL::update(std::string sql)
     if (mysql_query(conn, sql.c_str()) != 0)            // mysql_query 执行 sql语句成功返回 0
     {
         LOG_INFO << __FILE__ << ":" << __LINE__ << ":" << sql << " 更新失败！";
+        std::cerr << "mysql error: " << mysql_error(conn);
         return false;
     }
     return true;

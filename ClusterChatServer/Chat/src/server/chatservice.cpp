@@ -1,5 +1,6 @@
 #include "chatservice.hpp"
 #include "public.hpp"
+#include <iostream>
 #include <string>
 #include <vector>
 #include <muduo/base/Logging.h>             // muduo的日志相关

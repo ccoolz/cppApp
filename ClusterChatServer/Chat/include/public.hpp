@@ -23,8 +23,8 @@ enum MsgType
 注册
 {"msgid":3,"name":"zhang san","password":"123456"}
 一对一聊天
-{"msgid":5,"id":1,"name":"zhang san","toid":2,"msg":"hello"}
-{"msgid":5,"id":2,"name":"li si","toid":1,"msg":"nice to meet you"}
+{"msgid":5,"id":1,"name":"zhang san","toid":2,"msg":"hello","time":"2020-02-21 21:49:19"}
+{"msgid":5,"id":2,"name":"li si","toid":1,"msg":"nice to meet you","time":"2020-02-21 21:49:20"}
 添加好友
 {"msgid":6,"id":1,"friendid":2}
 {"msgid":6,"id":2,"friendid":1}

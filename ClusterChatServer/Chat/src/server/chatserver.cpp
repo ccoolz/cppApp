@@ -42,6 +42,7 @@ void ChatServer::onConnection(const TcpConnectionPtr &conn)
 void ChatServer::onMessage(const TcpConnectionPtr &conn, Buffer *buf_, Timestamp time)
 {
     std::string buf = buf_->retrieveAllAsString();      // 缓冲区收到的数据转化为字符串
+    std::cout << "recieve json:" << buf << "\n";
     json js = json::parse(buf);                         // 数据的反序列化
 
     // 我们希望通过解析反序列化得到的 json对象的 js[msg_id]获取对应业务的 业务处理器(MsgHandler)，而业务处理器在业务模块定义
