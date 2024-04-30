@@ -77,7 +77,7 @@ std::vector<Group> GroupModel::queryGroups(int userid)
                 user.setId(atoi(row[0]));
                 user.setName(row[1]);
                 user.setState(row[2]);
-                user.setRole(row[2]);
+                user.setRole(row[3]);
                 group.getUsers().push_back(user);       // 在 Group类中我们维护了一个 users数组，用来装聊天群内所有用户的 id，通过 getUsers获取它
             }
             mysql_free_result(res);
@@ -97,7 +97,7 @@ std::vector<Group> GroupModel::queryGroups(int userid)
 std::vector<int> GroupModel::queryGroupUsers(int userid, int groupid)
 {
     char sql[1024];
-    sprintf(sql, "select userid from groupuser where groupid = %d and userid != %d", groupid, userid);
+    sprintf(sql, "select userid from group_user where groupid = %d and userid != %d", groupid, userid);
 
     std::vector<int> id_vec;
     MySQL mysql;

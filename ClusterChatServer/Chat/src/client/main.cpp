@@ -24,6 +24,8 @@ User g_cur_user;
 std::vector<User> g_cur_user_friends;
 // 记录当前登录用户的群组列表
 std::vector<Group> g_cur_user_groups;
+// 记录当前用户的登录状态
+bool is_online = false;
 
 // 注册登录首页
 void homepage(int clientfd);
@@ -46,7 +48,7 @@ void addFriend(int clientfd, std::string cmd);
 void createGroup(int clientfd, std::string cmd);
 void addGroup(int clientfd, std::string cmd);
 void groupChat(int clientfd, std::string cmd);
-void loginOut(int clientfd, std::string cmd);
+void logout(int clientfd, std::string cmd);
 
 int main(int argc, char **argv)
 {
@@ -123,9 +125,9 @@ void homepage(int clientfd)
             break;
         }
     }
-
 }
 
+// 用户登录
 void login(int clientfd)
 {
     // 引导用户输入 id和 密码
@@ -165,6 +167,7 @@ void login(int clientfd)
         else
         {
             // 登录失败有两种情况 -- 用户已登录 | 账号或密码错误，通过 errmsg返回
+            // 测试用 -- std::cout << "登录响应消息: " << buf << "\n";
             json recv_js = json::parse(buf);
             if (0 != recv_js["errno"].get<int>())
             {
@@ -173,10 +176,12 @@ void login(int clientfd)
             }
             else
             { // 登录成功 -- 为了减小服务器的数据存储压力，用户登录成功后服务器会把用户相关信息发送给客户端，存储在客户端的本地
+                is_online = true;
                 // 记录当前用户的 id和姓名
                 g_cur_user.setId(recv_js["id"].get<int>());
                 g_cur_user.setName(recv_js["name"]);
-                // 记录当前用户的好友列表
+                // 记录当前用户的好友列表，     重新登录后再 push_back，之前的记录列表信息还存在，需要先重置一下
+                g_cur_user_friends.clear();
                 if (recv_js.contains("friends"))
                 {
                     std::vector<std::string> friends = recv_js["friends"];
@@ -190,7 +195,8 @@ void login(int clientfd)
                         g_cur_user_friends.push_back(fri);
                     }
                 }
-                // 记录当前用户的群组列表
+                // 记录当前用户的群组列表       新登录后再 push_back，之前的记录列表信息还存在，需要先重置一下
+                g_cur_user_groups.clear();
                 if (recv_js.contains("groups"))
                 {
                     std::vector<std::string> groups_str_vec = recv_js["groups"];
@@ -201,7 +207,8 @@ void login(int clientfd)
                         group.setId(group_js["id"].get<int>());
                         group.setName(group_js["groupname"]);
                         group.setDesc(group_js["groupdesc"]);
-                        std::vector<GroupUser> group_users = group.getUsers(); // 返回引用，相当于给 group对象的成员 users取别名
+                        std::vector<GroupUser> &group_users = group.getUsers(); // 返回引用，相当于给 group对象的成员 users取别名
+                        // bug: group.getUsers()虽然返回引用，但接它的变量也需要是引用。否则就不是在操作目标 group的 users成员
                         std::vector<std::string> users_str_vec = group_js["users"];
                         for (std::string &user_str : users_str_vec)
                         {
@@ -226,10 +233,21 @@ void login(int clientfd)
                     for (std::string &msg_str : msg_strs)
                     {
                         json msg_js = json::parse(msg_str);
-                        // time + [id name]: + xxx
-                        std::cout
-                            << msg_js["time"].get<std::string>() << " [" << msg_js["id"].get<int>() << "-" << msg_js["name"].get<std::string>() << "]: "
-                            << msg_js["msg"].get<std::string>() << "\n";
+                        if (msg_js["msgid"] == ONE_CHAT_MSG)
+                        {
+                            std::cout
+                                << msg_js["time"].get<std::string>() << " [" << msg_js["id"].get<int>() << "-" << msg_js["name"].get<std::string>() << "]: "
+                                << msg_js["msg"].get<std::string>() << "\n";
+                        }
+                        else if (msg_js["msgid"] == GROUP_CHAT_MSG)
+                        {
+                            // time + [群消息-groupid] + [id-name]: + xxx
+                            std::cout 
+                                << msg_js["time"].get<std::string>() << " [群消息-" << msg_js["groupid"].get<int>() << "]"
+                                << " [" << msg_js["id"].get<int>() << "-" << msg_js["name"].get<std::string>() << "]: "
+                                << msg_js["msg"].get<std::string>() << "\n";
+                        }
+                        else ;
                     }
                 }
 
@@ -243,6 +261,7 @@ void login(int clientfd)
     }
 }
 
+// 用户注册
 void regist(int clientfd)
 {
     // 引导用户输入 id和 密码
@@ -319,17 +338,17 @@ void showCurUserData()
             std::cout << group.getId() << " " << group.getName() << " " << group.getDesc() << "\n";
             for (GroupUser &user : group.getUsers())
             {
-                std::cout << user.getId() << " " << user.getName() << " " << user.getState() << " " << user.getRole() << "\n";
+                std::cout << "\t" << user.getId() << " " << user.getName() << " " << user.getState() << " " << user.getRole() << "\n";
             }
         }
     }
     std::cout << "======================================================\n";
 }
 
-// 接收线程 的线程函数
+// 接收线程的线程函数
 void readTaskHandler(int clientfd)
 {
-    for (;;)
+    while (is_online)       // #bug
     {
         // 接收到服务器转发的数据
         char buf[1024] = {0};
@@ -339,18 +358,55 @@ void readTaskHandler(int clientfd)
             close(clientfd);
             exit(-1);
         }
-        json recv_js = json::parse(buf);
 
-        // 处理一对一聊天数据
-        if (recv_js["msgid"].get<int>() == ONE_CHAT_MSG)
+        // 解析消息类型
+        json recv_js = json::parse(buf);
+        int msg_type = recv_js["msgid"].get<int>();
+
+        // 根据消息类型显示 一对一聊天数据或群聊聊天 数据，正常来说不会收到其他消息类型的数据，若有，不做处理
+        if (msg_type == ONE_CHAT_MSG)
         {
             std::cout << recv_js["time"].get<std::string>() << " [" << recv_js["id"].get<int>() << "-" << recv_js["name"].get<std::string>() << "]: "
                     << recv_js["msg"].get<std::string>() << "\n";
             continue;
         }
+        else if (msg_type == GROUP_CHAT_MSG)
+        {
+            std::cout << recv_js["time"].get<std::string>() << " [群消息-" << recv_js["groupid"] << "]"
+                    << " [" << recv_js["id"].get<int>() << "-" << recv_js["name"].get<std::string>() << "]: "
+                    << recv_js["msg"].get<std::string>() << "\n";
+            continue;
+        }
+        else if (msg_type == LOGIN_MSG_ACK)
+        {
+            // 测试用 -- std::cout << "接收子线程接收了一条登录响应消息\n";
+            // 再发送当前用户的登录消息给服务器，然后 break出这个循环，结束线程函数，不会继续读走下一次登录响应信息，等待下一次登录成功唤醒此线程
+            // 考虑到服务器第一次登录请求后改变了用户的 online信息会导致第二次请求失败，所以采用了下面的别的方法，如果别的方法不行，可以新建一种 “再次登录消息” 消息类型，并在两边都配套对应的处理函数
+            // 如果还有问题，可以对这里和再次开启子线程处都进行上同一个锁，这样直到这个线程结束才可以开下一个子线程，考虑到客户端和服务器通信需要的时间，先不加应该没问题
+            
+            // 目前的处理方式是 服务器连续发两次登录消息
+            // 若第一次被子线程读走，那么子线程也不会继续读第二次了，break出去，子线程结束，线程登录后开启另一个子线程。
+                // 主线程读走第二次成功登录
+            // 若第一次被主线程读走，主线程接下来的函数逻辑中没有读消息这一条，子线程一定会读到第二条，
+                // break出去，这个子线程结束，主线程登录后开启另一个子线程
+
+            // 更正，不应该 break
+            // 主线程先接收到登录确认，先登录，然后开启子线程，子线程接收到第二条登录确认，若 break出去，无法进行接下来的正常接收聊天消息
+            // 若什么也不做，分类讨论
+                // （1）主线程接收到第一条，登录成功，登录后开启子线程，子线程接收到第二条，此时登录状态变量为 true，进入下一轮循环，子线程可以正常接收消息
+                // （2）子线程接收到第一条，等待一小小段可以接受的时间（该时间应大于服务器发送两条消息的间隔时间），此时主线程接收到第二条登录确认，登录成功，登录状态变量立即被置 false，
+                    // 登录状态变量立即被置 false，子线程无法继续接受消息从而执行结束，主线程会另开一条线程接受消息
+            std::this_thread::sleep_for( std::chrono::milliseconds(150));
+        }
+        else
+        {
+            std::cerr << "客户端接收到了意外的消息\n";
+            break;
+        }
     }
 }
 
+// 获取当前系统时间
 std::string currentTime()
 {
     // chrono库 system_clock::now() 方法获取系统时钟当前时间，外面套 system_clock::to_time_t() 方法转获取的时间为 time_t类型
@@ -374,7 +430,7 @@ std::unordered_map<std::string, std::string> command_map = {
     {"creategroup", "创建群组，格式 creategroup:group_name:group_description"},
     {"addgroup",    "加入群组，格式 addgroup:group_id"},
     {"groupchat",   "群聊，格式 groupchat:group_id:message"},
-    {"loginout",    "退出登录，格式 loginout"}
+    {"logout",      "退出登录，格式 logout"}
 };
 // 在这个表中注册客户端支持的命令处理函数，方便在用户输入命令后自动调用对应处理
 std::unordered_map<std::string, std::function<void(int, std::string)>> command_handler_map = {
@@ -384,16 +440,16 @@ std::unordered_map<std::string, std::function<void(int, std::string)>> command_h
     {"creategroup", createGroup},
     {"addgroup", addGroup},
     {"groupchat", groupChat},
-    {"loginout", loginOut}
+    {"logout", logout}
 };
 // 客户端主页面程序，登录后显示，提示用户可用功能及其命令
 void mainMenu(int clientfd)
 {
     help();
-
-    char buf[1024] = {0};
-    for (;;)
+    
+    while (is_online)
     {
+        char buf[1024] = {0};
         // 获取用户输入的完整命令
         std::cin.getline(buf, sizeof(buf));
         std::string cmd_buf(buf);
@@ -408,7 +464,7 @@ void mainMenu(int clientfd)
         auto iter = command_handler_map.find(cmd);
         if (iter == command_handler_map.end() )
         {
-            std::cerr << "invalid command! please retry!\n";
+            std::cerr << "can not find command! please retry!\n";
             continue;
         }
         // 找到了命令，调用对应的处理函数，同样的，通过 map表注册 cmd-handler的映射，达到了不用添加业务代码的效果
@@ -423,7 +479,7 @@ void help(int, std::string)
     std::cout << "<<<<<    COMMAND LIST    >>>>>\n";
     for (const std::pair<std::string, std::string> &cmd_msg : command_map)
     {
-        if (cmd_msg.first.size() > 4)
+        if (cmd_msg.first.size() > 6)
             std::cout << cmd_msg.first << ":\t" << cmd_msg.second << "\n";
         else
             std::cout << cmd_msg.first << ":\t\t" << cmd_msg.second << "\n";
@@ -457,7 +513,7 @@ void chat(int clientfd, std::string cmd)
     int send_len = send(clientfd, buf.c_str(), strlen(buf.c_str()) + 1, 0);
     if (send_len == -1)
     {
-        std::cerr << "send addfriend message error!\n";
+        std::cerr << "send chat message error!\n";
     }
 }
 
@@ -481,34 +537,106 @@ void addFriend(int clientfd, std::string cmd)
     }
 }
 
+// "creategroup" command handler      creategroup:group_name:group_description
 void createGroup(int clientfd, std::string cmd)
 {
+    // 解析命令
+    int colon_idx = cmd.find(":");
+    if (colon_idx == -1)
+    {
+        std::cerr << "invalid command! please try again!\n";
+        return;
+    }
+    std::string group_name = cmd.substr(0, colon_idx);
+    std::string group_desc = cmd.substr(colon_idx + 1, cmd.size() - 1);
+
+    // 打包消息给服务器
+    json js;
+    js["msgid"] = CREATE_GROUP_MSG;
+    js["id"] = g_cur_user.getId();
+    js["groupname"] = group_name;
+    js["groupdesc"] = group_desc;
+    std::string buf = js.dump();
+
+    int send_len = send(clientfd, buf.c_str(), strlen(buf.c_str()) + 1, 0);
+    if (send_len == -1)
+    {
+        std::cerr << "send creategroup message error!\n";
+    }
 }
 
+// "addgroup" command handler        addgroup:group_id
 void addGroup(int clientfd, std::string cmd)
 {
+    // 解析命令
+    int group_id = atoi(cmd.c_str());
+
+    // 打包消息发给服务器
+    json js;
+    js["msgid"] = ADD_GROUP_MSG;
+    js["id"] = g_cur_user.getId();
+    js["groupid"] = group_id;
+    std::string buf = js.dump();
+
+    int send_len = send(clientfd, buf.c_str(), strlen(buf.c_str()) + 1, 0);
+    if (send_len == -1)
+    {
+        std::cerr << "send addgroup message error!\n";
+    }
 }
 
+// "groupchat" command handler        groupchat:group_id:message
 void groupChat(int clientfd, std::string cmd)
 {
+    // 解析命令
+    int colon_idx = cmd.find(":");
+    if (colon_idx == -1)
+    {
+        std::cerr << "invalid input! please retry!\n";
+        return;
+    }
+    int group_id = atoi(cmd.substr(0, colon_idx).c_str());
+    std::string msg = cmd.substr(colon_idx + 1, cmd.size() - colon_idx);
+
+    // 打包消息发给服务器
+    json js;
+    js["msgid"] = GROUP_CHAT_MSG;
+    js["id"] = g_cur_user.getId();
+    js["time"] = currentTime();
+    js["name"] = g_cur_user.getName();
+    js["groupid"] = group_id;
+    js["msg"] = msg;
+    std::cout << "[test js] :" << js << "\n";
+    std::string buf = js.dump();
+
+    int send_len = send(clientfd, buf.c_str(), strlen(buf.c_str()) + 1, 0);
+    if (send_len == -1)
+    {
+        std::cerr << "send groupchat message error!\n";
+    }
 }
 
-void loginOut(int clientfd, std::string cmd)
+// "logout" command handler         logout
+void logout(int clientfd, std::string cmd)
 {
-    homepage(clientfd);
-}
+    json js;
+    js["msgid"] = LOGOUT_MSG;
+    js["id"] = g_cur_user.getId();
+    std::string buf = js.dump();
 
+    int send_len = send(clientfd, buf.c_str(), strlen(buf.c_str())+ 1, 0);
+    if (send_len == -1)
+    {
+        std::cerr << "send groupchat message error!\n";
+        return;
+    }
+    // 更新用户的登录状态，以退出用户主页
+    is_online = false;
+}
 // ----------------------------- 函数实现区 -----------------------------
 
 
-/* __________________________ bug 区 __________________________
-gdb调试 :
-    gdb ../bin/ChatServer       调试可执行文件
-    break chatserver.cpp:41     设断点
-    run                         开始运行
-    c(continue)                 继续运行
-    n(next)                     一行行运行
-_______
+/*  ___________________________________________ bug 区 ___________________________________________
 bug_1: 
     表现__
         若使用 const char* 接 json.dump().c_str()数据，如
@@ -550,4 +678,71 @@ bug_3:
         这是离线消息表设计上的问题，一开始把表的 userid设为主键，导致一个 userid只会有一条数据被储存
     解决方法__
         重新建表，userid不设为主键，设为 not null即可
-__________________________ bug 区 __________________________ */
+bug_4:
+    表现__
+        creategroup:中文:中文失败
+    原因分析__
+        show create table all_group结果如下
+            | all_group | CREATE TABLE `all_group` (
+            `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '组id',
+            `groupname` varchar(50) CHARACTER SET latin1 NOT NULL COMMENT '组名称',
+            `groupdesc` varchar(200) CHARACTER SET latin1 DEFAULT '' COMMENT '组功能描述',
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `groupname` (`groupname`)
+            ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8 
+        发现表的默认字符集是 utf8 但`groupname``groupdesc`的字符集都是 latin1
+    解决方法__
+        mysql> ALTER TABLE all_group MODIFY groupname varchar(50) CHARACTER SET utf8 NOT NULL;
+        mysql> ALTER TABLE all_group MODIFY groupdesc varchar(200) CHARACTER SET utf8 DEFAULT '';
+bug_5:
+    表现__
+        比如 json解析错误等原因导致服务器程序异常结束时，已登录的用户的状态仍是 online，
+        导致客户端用户的下次登录无法成功
+bug_6:
+    表现__
+        用户登录成功后打印了用户所在群组，却没按预想打印群组中的成员信息
+    原因分析__
+        本文件的 login函数登录成功后获取组和组成员中有一条语句
+        std::vector<GroupUser> group_users = group.getUsers(); // 返回引用，相当于给 group对象的成员 users取别名
+        group.getUsers()虽然返回引用，但接它的变量也需要是引用。否则就不是在操作目标 group的 users成员
+    解决方法__    
+        用引用变量来接 std::vector<GroupUser> &group_users = group.getUsers();
+bug_7:
+    表现__
+        用户登出后再登录，有时输入密码后却无响应，没有按代码逻辑进行下一步
+    原因分析__
+        从再次登录后的代码逻辑进行分析：用户输入密码 -> 客户端向服务器发送登录请求消息 -> 服务器回复消息(成功或失败都有响应)
+        那么就是在上述过程中发生了问题，核心问题在于，服务器接收到了消息，为什么不回复消息呢？
+        经过分析，我们发现原因来自子线程，在上次登录成功后，子线程开始读取服务器发送的数据，
+        而登录函数所在的主线程也在等待服务器发送的返回数据，这时，若数据被子线程读走了，主线程就接收不到该数据，阻塞在了 recv()处
+        这个 bug是多线程问题，无法简单通过调试排出来，需要对程序了解熟悉过程，思考出来
+    解决方法__
+        （1）
+            设置一个变量 bool is_online，设置子线程循环接收信息的循环条件为 is_online
+            这样退出登录后就无法继续这个循环，子线程函数执行结束，退出子线程
+            此时出现频率已大大减少，但还会有上述错误情况，应该是子线程此时阻塞在 recv，在循环体内，还是会可能读走数据
+            那么就要想办法解决这个登录数据被读走的情况
+                （目前想到的解决方案是 子线程的 登录中还应该有一个发送回应消息给服务器的部分
+                当服务器发送的登录确认消息后开始 recv（这里应该用 muduo的接收 api）子线程 login()发送的登录确认消息
+                若一段时间后还没有收到确认消息，说明发送的登录响应消息被客户端子线程读走，此时子线程函数进入判断，发现用户已下线，子线程结束
+                那么再发送一次登录响应消息就一定会被客户端主线程的登录程序接收。这个思路类似三次握手，客户端发登录消息 - 服务端发登录确认消息 - 客户端发确认登录成功消息 的过程
+                还想到一种方法，子线程对收到的消息进行判断时，对收到消息为登录响应消息的情况进行处理（未完待续），先用这种方法确认是否是这个原因
+                括号内的想法未采用）
+        （2）
+            目前的处理方式是 ，在（1）的基础上，服务器连续发两次登录消息
+            若第一次被子线程读走，那么子线程也不会继续读第二次了，break出去，子线程结束，线程登录后开启另一个子线程。主线程读走第二次成功登录
+            若第一次被主线程读走，主线程接下来的函数逻辑中没有读消息这一条，子线程一定会读到第二条，break出去，这个子线程结束，主线程登录后开启另一个子线程
+            // 更正，不应该 break
+            // 主线程先接收到登录确认，先登录，然后开启子线程，子线程接收到第二条登录确认，若 break出去，无法进行接下来的正常接收聊天消息
+            // 若什么也不做，分类讨论
+                // （1）主线程接收到第一条，登录成功，登录后开启子线程，子线程接收到第二条，此时登录状态变量为 true，进入下一轮循环，子线程可以正常接收消息
+                // （2）子线程接收到第一条，等待一小小段可以接受的时间，此时主线程接收到第二条登录确认，登录成功，登录状态变量立即被置 false，
+                    // 子线程无法继续接受消息从而执行结束，主线程会另开一条线程接受消息
+    ___________________________________________ bug 区 ___________________________________________ */
+
+
+/*  ______________________________________ 待完善功能区 ______________________________________
+(1) 接收数据部分除了聊天类型信息，还可以对别的信息进行处理，这需要我们现在服务器代码中对某些处理完的信息进行返回
+    比如可以在服务器程序创建群聊后发一个创建群聊响应消息给客户端，客户端根据错误码打印创建成功或创建失败给用户看
+    比如可以在其他好友用户登录时实时更新好友状态表给用户看，以告知用户哪些好友在线
+    ______________________________________ 待完善功能区 ______________________________________*/

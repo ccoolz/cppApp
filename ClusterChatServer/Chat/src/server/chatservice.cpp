@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <thread>
 #include <muduo/base/Logging.h>             // muduo的日志相关
 using namespace muduo;
 
@@ -11,12 +12,20 @@ using namespace muduo;
 ChatService::ChatService()
 {
     msg_handler_map.insert({LOGIN_MSG, std::bind(&ChatService::login, this, _1, _2, _3)});
+    msg_handler_map.insert({LOGOUT_MSG, std::bind(&ChatService::logout, this, _1, _2, _3)});
     msg_handler_map.insert({REGIST_MSG, std::bind(&ChatService::regist, this, _1, _2, _3)});
     msg_handler_map.insert({ONE_CHAT_MSG, std::bind(&ChatService::oneChat, this, _1, _2, _3)});
     msg_handler_map.insert({ADD_FRIEND_MSG, std::bind(&ChatService::addFriend, this, _1, _2, _3)});
     msg_handler_map.insert({CREATE_GROUP_MSG, std::bind(&ChatService::createGroup, this, _1, _2, _3)});
     msg_handler_map.insert({ADD_GROUP_MSG, std::bind(&ChatService::addGroup, this, _1, _2, _3)});
     msg_handler_map.insert({GROUP_CHAT_MSG, std::bind(&ChatService::groupChat, this, _1, _2, _3)});
+
+    // 连接 redis服务器
+    if (redis.connect())
+    {
+        // 设置 Redis上报消息函数的具体实现，使上报消息函数满足服务器的具体要求
+        redis.init_notify_handler( std::bind(&ChatService::handleRedisSubscribeMessage, this, _1, _2));
+    }
 }
 
 ChatService* ChatService::getInstance()
@@ -60,9 +69,16 @@ void ChatService::clientCloseException(const TcpConnectionPtr &conn)
             }
         }
     }
-    User user = user_model.query(id);                       // 这部分操作本该在2中完成，但为了减小锁的粒度，移到锁的作用域外完成
-    user.setState("offline");       
-    user_model.updateState(user);
+
+    // 异常退出，用户下线，取消订阅 id映射的频道
+    redis.unsubscribe(id);
+
+    if (id != -1)                                           // 客户端正常退出时 id已被移除，map中找不到，仍为 -1，无需再次操作
+    {
+        User user = user_model.query(id);                   // 这部分操作本该在2中完成，但为了减小锁的粒度，移到锁的作用域外完成
+        user.setState("offline");       
+        user_model.updateState(user);
+    }
 }
 
 // 服务器异常退出，重置业务方法（比如使所有用户状态下线）
@@ -97,6 +113,9 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
             }
             user.setState("online");
             user_model.updateState(user);
+
+            // 用户登录成功，向 Redis订阅 channel(id)
+            redis.subscribe(id);
 
             // 登录回应消息
             response["msgid"] = LOGIN_MSG_ACK;
@@ -159,6 +178,10 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
 
             // 发送所有消息给用户客户端
             conn->send(response.dump());
+            // 连续发送两次的目的是解决第一次可能被客户端子线程接收函数读走导致主线程登录函数读不到的情况
+            // 设置一定的发送间隔以免被同时读取，同时读取会导致 json解析错误
+            std::this_thread::sleep_for( std::chrono::microseconds(500));
+            conn->send(response.dump());
         } 
     }
     else                                    // 登录失败
@@ -168,6 +191,28 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
         response["errmsg"] = "the user id does not exist or the password is incorrect!";
         conn->send(response.dump());
     }
+}
+
+// 处理登出业务
+void ChatService::logout(const TcpConnectionPtr &conn, json &js, Timestamp time)
+{
+    // 从用户-连接表中删除登出用户的连接
+    int id = js["id"].get<int>();
+    {
+        std::lock_guard<std::mutex> lock(map_mtx);
+        auto iter = user_conn_map.find(id);
+        if (iter != user_conn_map.end())
+        {
+            user_conn_map.erase(iter);
+        }
+    }
+
+    // 用户下线，从 Redis中取消订阅
+    redis.unsubscribe(id);
+
+    // 更新用户状态为离线
+    User user(id, "", "", "offline");
+    user_model.updateState(user);
 }
 
 // 处理注册业务 -- 收到客户端发送的json字符串，服务器解析消息类型为登录，反序列化 name password | id自动生成 state默认offline 不需要
@@ -200,7 +245,7 @@ void ChatService::regist(const TcpConnectionPtr &conn, json &js, Timestamp time)
 // 处理一对一聊天业务
 void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time)
 {
-    // 查询被发送消息用户的在线状态（通过 user_conn_map）
+    // 在本服务器中查询被发送消息用户的在线状态（通过 user_conn_map）
     int to_id = js["toid"].get<int>();
     {
         std::lock_guard<std::mutex> lock(map_mtx);
@@ -212,8 +257,17 @@ void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time
             return;
         }
     }
+
+    // 引入多服务器负载均衡后，若本服务器的连接表中未找到目标 id，可能有两种情况
+    // 1.该用户在其他服务器上登录，而非下线，可以通过查询数据库查到它的 state是 online
+    User to_user = user_model.query(to_id);
+    if (to_user.getState() == "online")
+    {       // 在对方订阅的频道上发布消息，对方服务器通过 notify的回调函数将消息上报业务层
+        redis.publish(to_id, js.dump());
+        return;
+    }
     
-    // to_id不在线，存储离线消息
+    // 2.查询数据库它的状态是 offline，说明该用户确实是离线状态，存储离线消息
     offline_msg_model.insert(to_id, js.dump());
 }
 
@@ -267,12 +321,40 @@ void ChatService::groupChat(const TcpConnectionPtr &conn, json &js, Timestamp ti
         auto iter = user_conn_map.find(id);
         if (iter != user_conn_map.end())
         {
-            // 若 id在线在线，转发消息
+            // 若 id在本服务器上在线，转发消息
             TcpConnectionPtr conn = iter->second;
             conn->send(js.dump());
-        } else {
-            // 不在线，存储离线消息
-            offline_msg_model.insert(id, js.dump());
+        } 
+        else 
+        {
+            User user = user_model.query(id);
+            if (user.getState() == "online")
+            {
+                // 在其他服务器上在线，转发消息
+                redis.publish(id, js.dump());
+            }
+            else
+            {
+                // 不在线，存储离线消息
+                offline_msg_model.insert(id, js.dump());
+            }
         }
     }
+}
+
+// 从 redis消息队列中获取订阅的消息     服务器业务对象初始化过程中将该函数指针的值赋给 Redis处理订阅消息的回调函数
+void ChatService::handleRedisSubscribeMessage(int userid, std::string msg)
+{
+    {
+        std::lock_guard<std::mutex> lock(map_mtx);
+        // 可能发生这种情况: 另一台服务器的用户发送消息时本服务器的目标用户还未下线，
+        // 但本服务器接收到该消息时或之前该用户下线了，那么需要在服务器接收到上报的消息后判断该用户的在线情况
+        auto iter = user_conn_map.find(userid);
+        if (iter != user_conn_map.end())
+        {
+            iter->second->send(msg);
+            return;
+        }
+    }
+    offline_msg_model.insert(userid, msg);
 }

@@ -1,6 +1,7 @@
 #include "chatserver.hpp"
 #include "chatservice.hpp"
 #include <signal.h>
+#include <iostream>
 
 // 处理服务器 Ctrl + c 结束后，重置用户的状态信息
 void resetHandler(int signum)
@@ -10,16 +11,28 @@ void resetHandler(int signum)
     exit(0);
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    // 通过命令行参数解析出服务器 ip和 port
+    if (argc < 3)
+    {
+        std::cerr << "invalid command! example: ./ChatServer 127.0.0.1 5000\n";
+        exit(-1);
+    }
+    char *ip = argv[1];
+    uint16_t port = atoi(argv[2]);
+
+    // 处理服务器 Ctrl + c 结束后，重置用户的状态信息
     signal( SIGINT, resetHandler);
 
     EventLoop loop;
-    InetAddress addr("127.0.0.1", 5000);
+    InetAddress addr(ip, port);
     ChatServer server(&loop, addr, "ChatServer");
 
     server.start();
     loop.loop();
+
+    return 0;
 }
 
 /* 关于 signal(int signum, sighandler_t handler)函数
